@@ -1,0 +1,61 @@
+{
+  "name": "dsh-hindsight-workspace-switch",
+  "version": "0.1.0",
+  "description": "A per-workspace HindSight switch for the DeepSeek Harness composer: turn memory off for one workspace without uninstalling it anywhere else.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "default": "./src/index.js"
+    },
+    "./client": {
+      "default": "./client/index.cjs"
+    }
+  },
+  "files": [
+    "src",
+    "client",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.CN.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "teardown": "node scripts/teardown.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "hindsight",
+    "memory",
+    "workspace"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ckcfcc/dsh-hindsight-workspace-switch.git"
+  },
+  "homepage": "https://github.com/ckcfcc/dsh-hindsight-workspace-switch#readme",
+  "bugs": {
+    "url": "https://github.com/ckcfcc/dsh-hindsight-workspace-switch/issues"
+  },
+  "author": "ckcfcc",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
