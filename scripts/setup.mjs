@@ -194,12 +194,26 @@ function main() {
   }
 
   // 3. Rewrite the home patch without the HindSight row.
+  //
+  // A patch file must stay a single top-level YAML array. Removing the only
+  // entry can leave nothing but comments behind, which dsh rejects with
+  // "must be a top-level YAML array of loader patch entries" — so an emptied
+  // file gets the `[]` placeholder a fresh install ships with.
   const eol = detectEol(original)
   let nextHome = withoutOurs.join('\n').replace(/\n{3,}/g, '\n\n')
+
+  const homeHasArray = withoutOurs.some(line => line.trim() === '[]')
+    || withoutOurs.some(line => /^-\s/.test(line))
+  if (!homeHasArray) {
+    const body = nextHome.replace(/\s+$/, '')
+    nextHome = body === '' ? '[]\n' : `${body}\n\n[]\n`
+  }
+
   if (eol === '\r\n') nextHome = nextHome.split('\n').join('\r\n')
   if (nextHome !== original) {
     if (!args.dryRun) writeFileSync(homePatch, nextHome)
     console.log('setup: cleared the home-level hindsight row (layer 3).')
+    if (!homeHasArray) console.log(`setup: restored the [] placeholder in ${homePatch}.`)
   }
 
   // 4. Record the target in the profile patch (layer 2).
