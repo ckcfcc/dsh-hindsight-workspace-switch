@@ -92,6 +92,17 @@ export async function apply(ctx, config = {}) {
     else logger.info(`HindSight mounted per workspace from ${target}; state file ${state.file}.`)
   }
 
+  // A bundle layer can mount this package a second time under an id derived
+  // from the package name, and that row carries no `target` of its own. It has
+  // nothing to switch, and it has to stay out of the way: registering
+  // /api/hindsight-switch from the empty instance shadows the real one, and
+  // the composer then reads installed: false and hides the switch altogether.
+  if (plugin === undefined) {
+    logger.info('hindsight-switch: this row has no HindSight target — standing down '
+      + 'because another row already owns the switch.')
+    return
+  }
+
   /** Live mounts, keyed by session id. */
   const mounted = new Map()
 
