@@ -104,12 +104,6 @@ session.append('user/message', content, {
 dsh plugin --profile web add github:<你的用户名>/dsh-hindsight-workspace-switch
 ```
 
-如果也发到了 npm：
-
-```sh
-dsh plugin --profile web add dsh-hindsight-workspace-switch
-```
-
 因为包声明了 `dsh.bundle`，`dsh plugin` 会自动把它追加进 profile 的 `dsh.profile.bundles`。这一半**不需要手改任何文件**，卸载时也会自动撤销该层。
 
 ### 2. 接管 `hindsight` 行

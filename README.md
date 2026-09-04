@@ -155,11 +155,6 @@ Two honest caveats:
 dsh plugin --profile web add github:<your-user>/dsh-hindsight-workspace-switch
 ```
 
-or, if published to npm:
-
-```sh
-dsh plugin --profile web add dsh-hindsight-workspace-switch
-```
 
 Because the package declares `dsh.bundle`, `dsh plugin` appends it to the
 profile's `dsh.profile.bundles` automatically. No file editing is needed for
