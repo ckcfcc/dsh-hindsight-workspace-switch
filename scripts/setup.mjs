@@ -21,7 +21,7 @@
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 const PACKAGE = 'dsh-hindsight-workspace-switch'
 const ROW_ID = 'hindsight'
@@ -34,6 +34,9 @@ const BACKUP_SUFFIX = '.hindsight-switch.bak'
 /** Split on LF or CRLF without losing the file's own ending. */
 const splitLines = (text) => text.split(/\r?\n/)
 const joinLines = (lines) => lines.join('\n')
+
+/** Keep the file's own line ending when writing back. */
+const detectEol = (text) => (text.includes('\r\n') ? '\r\n' : '\n')
 
 /** Parse --flags out of argv. */
 function parseArgs(argv) {
@@ -91,6 +94,57 @@ function toFileUrl(raw) {
   return raw
 }
 
+/**
+ * Write our row into a profile patch file.
+ *
+ * A patch file is a single top-level YAML array. A brand-new profile ships with
+ * `[]` on its own line, and that is a *complete* flow-style array: appending a
+ * second array after it makes the document invalid ("end of the stream or a
+ * document separator is expected"). So an empty placeholder is replaced in
+ * place, while a block-style array is appended to.
+ *
+ * @param path - the profile patch file.
+ * @param target - the HindSight module URL.
+ * @param dryRun - true to skip the write.
+ * @returns the text that was (or would be) written.
+ */
+function writeProfileRow(path, target, dryRun) {
+  const original = existsSync(path) ? readFileSync(path, 'utf8') : ''
+  const eol = detectEol(original)
+
+  // Drop any row we wrote before, so re-running cannot duplicate it.
+  const { lines } = cutBlock(splitLines(original), OURS_START, OURS_END)
+
+  const entry = [
+    '- insert:',
+    `  - id: ${ROW_ID}`,
+    `    name: ${PACKAGE}`,
+    '    config:',
+    `      target: ${target}`,
+  ]
+
+  const placeholderAt = lines.findIndex(line => line.trim() === '[]')
+  let next
+  if (placeholderAt !== -1) {
+    // Replace the empty array with our row, markers around it for removal.
+    next = [
+      ...lines.slice(0, placeholderAt),
+      OURS_START,
+      ...entry,
+      OURS_END,
+      ...lines.slice(placeholderAt + 1),
+    ].join('\n')
+  } else {
+    const body = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '')
+    const prefix = body === '' ? '' : body + '\n\n'
+    next = prefix + [OURS_START, ...entry, OURS_END].join('\n') + '\n'
+  }
+
+  if (eol === '\r\n') next = next.split('\n').join('\r\n')
+  if (!dryRun) writeFileSync(path, next)
+  return next
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
   const home = dshHome()
@@ -104,11 +158,10 @@ function main() {
   }
 
   const original = readFileSync(homePatch, 'utf8')
-  const lines = splitLines(original)
 
   // 1. Recover the target. Re-running the script is normal, so fall back to
   //    the row this script wrote last time before giving up.
-  const { lines: withoutHindsight, removed } = cutBlock(lines, START, END)
+  const { lines: withoutHindsight, removed } = cutBlock(splitLines(original), START, END)
   const { lines: withoutOurs } = cutBlock(withoutHindsight, OURS_START, OURS_END)
 
   let target = args.target
@@ -141,34 +194,20 @@ function main() {
   }
 
   // 3. Rewrite the home patch without the HindSight row.
-  const nextHome = joinLines(withoutOurs).replace(/\n{3,}/g, '\n\n')
+  const eol = detectEol(original)
+  let nextHome = withoutOurs.join('\n').replace(/\n{3,}/g, '\n\n')
+  if (eol === '\r\n') nextHome = nextHome.split('\n').join('\r\n')
   if (nextHome !== original) {
     if (!args.dryRun) writeFileSync(homePatch, nextHome)
     console.log('setup: cleared the home-level hindsight row (layer 3).')
   }
 
-  // 4. Record the target in the profile patch so it wins over the bundle default.
-  const block = [
-    OURS_START,
-    '- insert:',
-    `  - id: ${ROW_ID}`,
-    `    name: ${PACKAGE}`,
-    '    config:',
-    `      target: ${target}`,
-    OURS_END,
-    '',
-  ].join('\n')
-
-  let profileText = existsSync(profilePatch) ? readFileSync(profilePatch, 'utf8') : ''
-  const profileLines = splitLines(profileText)
-  const { lines: profileWithoutOurs } = cutBlock(profileLines, OURS_START, OURS_END)
-  profileText = joinLines(profileWithoutOurs).replace(/\n{3,}/g, '\n\n')
-  if (profileText !== '' && !profileText.endsWith('\n')) profileText += '\n'
-  profileText += (profileText === '' || profileText === '\n' ? '' : '\n') + block
-
-  if (!args.dryRun) writeFileSync(profilePatch, profileText)
-  console.log(`setup: wrote the target into ${profilePatch} (layer 2).`)
+  // 4. Record the target in the profile patch (layer 2).
+  writeProfileRow(profilePatch, target, args.dryRun)
+  console.log(`setup: wrote the row into ${profilePatch} (layer 2).`)
   console.log(`       target = ${target}`)
+  console.log('       note: the home patch is shared by every profile — run setup for')
+  console.log('       each profile that should keep using HindSight, or teardown to undo.')
 
   if (args.dryRun) {
     console.log('\n[dry-run] no files were changed.')

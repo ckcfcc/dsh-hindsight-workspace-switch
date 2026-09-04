@@ -21,8 +21,12 @@ const OURS_START = '# DSH_HINDSIGHT_WORKSPACE_SWITCH_START'
 const OURS_END = '# DSH_HINDSIGHT_WORKSPACE_SWITCH_END'
 const BACKUP_SUFFIX = '.hindsight-switch.bak'
 
+/** Split on LF or CRLF without losing the file's own ending. */
 const splitLines = (text) => text.split(/\r?\n/)
 const joinLines = (lines) => lines.join('\n')
+
+/** Keep the file's own line ending when writing back. */
+const detectEol = (text) => (text.includes('\r\n') ? '\r\n' : '\n')
 
 /** Parse --flags out of argv. */
 function parseArgs(argv) {
@@ -64,6 +68,40 @@ function cutBlock(lines, startMarker, endMarker) {
   }
 }
 
+/**
+ * Remove our row from a profile patch file.
+ *
+ * A patch file must stay a single top-level YAML array, so if removing our row
+ * leaves nothing behind, the `[]` placeholder a fresh profile ships with is put
+ * back. Otherwise the file would parse as an empty document and dsh would
+ * reject it.
+ *
+ * @param path - the profile patch file.
+ * @param dryRun - true to skip the write.
+ * @returns true when a row was removed.
+ */
+function removeProfileRow(path, dryRun) {
+  if (!existsSync(path)) return false
+  const original = readFileSync(path, 'utf8')
+  const { lines, removed } = cutBlock(splitLines(original), OURS_START, OURS_END)
+  if (removed.length === 0) return false
+
+  const eol = detectEol(original)
+  let next = lines.join('\n').replace(/\n{3,}/g, '\n\n')
+
+  // Restore the placeholder only when no array item is left at all.
+  const hasArray = lines.some(line => line.trim() === '[]')
+    || lines.some(line => /^-\s/.test(line))
+  if (!hasArray) {
+    const body = next.replace(/\s+$/, '')
+    next = body === '' ? '[]\n' : body + '\n\n[]\n'
+  }
+
+  if (eol === '\r\n') next = next.split('\n').join('\r\n')
+  if (!dryRun) writeFileSync(path, next)
+  return true
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
   const home = dshHome()
@@ -81,16 +119,10 @@ function main() {
 
   // 2. Drop the profile-level row this plugin added. If the row survived here
   //    while the home row is back, the profile layer would still win.
-  if (existsSync(profilePatch)) {
-    const text = readFileSync(profilePatch, 'utf8')
-    const { lines, removed } = cutBlock(splitLines(text), OURS_START, OURS_END)
-    if (removed.length > 0) {
-      const next = joinLines(lines).replace(/\n{3,}/g, '\n\n')
-      if (!args.dryRun) writeFileSync(profilePatch, next)
-      console.log(`teardown: removed the switch row from ${profilePatch}.`)
-    } else {
-      console.log(`teardown: no switch row in ${profilePatch}.`)
-    }
+  if (removeProfileRow(profilePatch, args.dryRun)) {
+    console.log(`teardown: removed the switch row from ${profilePatch}.`)
+  } else {
+    console.log(`teardown: no switch row in ${profilePatch}.`)
   }
 
   // 3. Drop the backup only after both files are settled.
