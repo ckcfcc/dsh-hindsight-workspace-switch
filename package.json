@@ -1,6 +1,6 @@
 {
   "name": "dsh-hindsight-workspace-switch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A per-workspace HindSight switch for the DeepSeek Harness composer: turn memory off for one workspace without uninstalling it anywhere else.",
   "type": "module",
   "main": "./src/index.js",
