@@ -152,7 +152,13 @@ Two honest caveats:
 ### 1. Install the package
 
 ```sh
-dsh plugin --profile web add github:<your-user>/dsh-hindsight-workspace-switch
+dsh plugin --profile web add github:ckcfcc/dsh-hindsight-workspace-switch
+```
+
+or
+
+```sh
+dsh plugin --profile web add dsh-hindsight-workspace-switch
 ```
 
 
