@@ -74,10 +74,11 @@ export async function apply(ctx, config = {}) {
   const rows = scanPatchRows(extraFiles)
   const foreign = rows.find(isForeignHindsight)
   const target = firstString(config.target, process.env.HINDSIGHT_DSH_TARGET)
-    ?? patchFilePaths(extraFiles)
-      .map(file => readTarget(file))
-      .find(candidate => candidate !== undefined)
-    ?? foreign?.name
+  // const target = firstString(config.target, process.env.HINDSIGHT_DSH_TARGET)
+  //   ?? patchFilePaths(extraFiles)
+  //     .map(file => readTarget(file))
+  //     .find(candidate => candidate !== undefined)
+  //   ?? foreign?.name
 
   let plugin
   if (foreign !== undefined) {
@@ -153,8 +154,13 @@ export async function apply(ctx, config = {}) {
   }
 
   if (plugin !== undefined) {
-    ctx.on('agent/created', ({ agent }) => { mountIfEnabled(agent) })
-    ctx.on('agent/session-start', ({ agent }) => { mountIfEnabled(agent) })
+    ctx.on('agent/created', ({ agent }) => { 
+      mountIfEnabled(agent)
+      const workspace = resolveWorkspace(agent)
+      if (workspace !== undefined && state.isDisabled(workspace.key)) {
+        void retireWorkspace(workspace.key, workspace.title)
+      }
+    })
     ctx.on('agent/disposed', ({ agent }) => { mounted.delete(agent.id) })
     // Agents created before this plugin activated keep their own state, so a
     // patch reload does not silently strip memory from a running session.
@@ -225,12 +231,10 @@ export async function apply(ctx, config = {}) {
     const kept = []
     for (const block of content) {
       if (block === null || typeof block !== 'object') { kept.push(block); continue }
-      const textKey = typeof block.text === 'string' ? 'text' : (typeof block.content === 'string' ? 'content' : undefined)
-      if (textKey !== undefined) {
-        const raw = block[textKey]
-        if (!raw.includes(BLOCK_OPEN)) { kept.push(block); continue }
-        const rest = raw.replace(BLOCK_RE, '').trim()
-        if (rest !== '') kept.push({ ...block, [textKey]: rest })
+      if (typeof block.text === 'string') {
+        if (!block.text.includes(BLOCK_OPEN)) { kept.push(block); continue }
+        const rest = block.text.replace(BLOCK_RE, '').trim()
+        if (rest !== '') kept.push({ ...block, text: rest })
         continue
       }
       kept.push(block)
@@ -239,26 +243,20 @@ export async function apply(ctx, config = {}) {
   }
 
   /**
-   * Read the message content out of one session event's data.
-   * @param event - session event.
-   * @returns the string or ContentBlock array, or undefined.
-   */
-  const eventContent = (event) => {
-    if (event?.type === 'user/message' || event?.type === 'system/message') return event.data?.content
-    if (event?.type === 'assistant/message' || event?.type === 'tool/result') return event.data?.message?.content
-    return undefined
-  }
-
-  /**
    * Retire every residual HindSight block on one agent's surface.
    *
    * Each replacement rewrites the surface, so seqs are collected up front and
    * re-checked for membership right before each append.
    *
+   * The result is a small report rather than a bare count: the file sink has
+   * proven unreliable and stderr is unreadable in some consoles, so the only
+   * channel this plugin can trust is the HTTP response it hands back.
+   *
    * @param agent - live agent.
-   * @returns how many nodes were retired.
+   * @returns { scanned, blocks, retired, types, error }.
    */
   const shadowResidualBlocks = (agent) => {
+    const empty = { scanned: 0, blocks: 0, retired: 0, types: {}, error: undefined }
     const session = agent?.session
     const surface = session?.surface
     if (surface === undefined || !Array.isArray(surface.nodes)) {
@@ -267,56 +265,59 @@ export async function apply(ctx, config = {}) {
         logger.warn('session surface is not readable: residual HindSight blocks stay in the '
           + 'request until a new session starts.')
       }
-      return 0
+      return { ...empty, error: `surface unreadable (session=${session === undefined ? 'none' : 'ok'})` }
     }
 
     // Snapshot first: an append mutates the surface we are walking.
-    const candidates = surface.nodes.filter((seq) => {
+    const candidates = []
+    const types = {}
+    for (const seq of surface.nodes) {
       const event = eventAt(session, seq)
-      const content = eventContent(event)
-      return content !== undefined && textOf(content).includes(BLOCK_OPEN)
-    })
-    trace(`surface scan: ${surface.nodes.length} node(s), ${candidates.length} block(s)`)
-    if (candidates.length === 0) return 0
+      const type = event instanceof Promise ? 'PROMISE' : (event?.type ?? 'undefined')
+      types[type] = (types[type] ?? 0) + 1
+      if (event?.type !== 'user/message') continue
+      const data = event.data
+      if (data === undefined || data === null) continue
+      if (textOf(data.content).includes(BLOCK_OPEN)) candidates.push(seq)
+    }
+    // trace(`surface scan: ${surface.nodes.length} node(s), ${candidates.length} block(s)`)
+    if (candidates.length === 0) {
+      return { scanned: surface.nodes.length, blocks: 0, retired: 0, types, error: undefined }
+    }
 
     let retired = 0
+    let error
     for (const seq of candidates) {
       try {
         // An earlier replacement may have already retired this node.
         if (!session.surface.nodes.includes(seq)) continue
         const event = eventAt(session, seq)
-        const original = eventContent(event)
-        if (original === undefined) continue
+        if (event?.type !== 'user/message' || event.data === undefined) continue
 
-        const kept = stripBlocks(original)
+        const kept = stripBlocks(event.data.content)
         const content = kept === undefined
           ? [{ type: 'text', text: REMOVED_MARKER }]
           : kept
 
-        const data = { ...event.data }
-        if (event.type === 'user/message' || event.type === 'system/message') {
-          data.content = content
-        } else if (data.message !== undefined) {
-          data.message = { ...data.message, content }
-        }
-
-        // Keep type and source as-is: HindSight's write-back does not mistake
-        // the marker for user input if the source says otherwise.
+        // Keep source as-is: a plugin-sourced message stays plugin-sourced, so
+        // HindSight's write-back does not mistake the marker for user input.
         session.append(
-          event.type,
-          data,
+          'user/message',
+          { ...event.data, role: 'user', content },
           {
             surfaceOp: { op: 'replace', start: seq, end: seq },
             sourceEventSeqs: [seq],
           },
         )
         retired += 1
-        trace(`retired block at seq ${seq}`)
-      } catch (error) {
-        logger.warn(`could not retire the block at seq ${seq}: ${messageOfError(error)}`)
+        // trace(`retired block at seq ${seq}`)
+      } catch (failure) {
+        const text = messageOfError(failure)
+        if (error === undefined) error = `seq ${seq}: ${text}`
+        logger.warn(`could not retire the block at seq ${seq}: ${text}`)
       }
     }
-    return retired
+    return { scanned: surface.nodes.length, blocks: candidates.length, retired, types, error }
   }
 
   /** The compaction engine, when the profile composes one. */
@@ -355,32 +356,46 @@ export async function apply(ctx, config = {}) {
    * Retire residual blocks for every live agent of one workspace. Scoped on
    * purpose: the state is per workspace, so an unscoped sweep would damage
    * sessions that still have HindSight enabled.
+   *
    * @param key - workspace key.
    * @param title - workspace title, for the log line.
+   * @returns { agents, scanned, blocks, retired, types, error }.
    */
   const retireWorkspace = async (key, title) => {
-    let retired = 0
+    const report = { agents: 0, scanned: 0, blocks: 0, retired: 0, types: {}, error: undefined }
     for (const agent of ctx.agents.list()) {
       const workspace = resolveWorkspace(agent)
       if (workspace === undefined || workspace.key !== key) continue
-      trace(`sweeping agent ${agent.id} in ${title}`)
-      if (config.shadowOnDisable !== false) retired += shadowResidualBlocks(agent)
-      if (retired === 0 && config.compactOnDisable === true) {
+      report.agents += 1
+      // trace(`sweeping agent ${agent.id} in ${title}`)
+      if (config.shadowOnDisable !== false) {
+        const one = shadowResidualBlocks(agent)
+        report.scanned += one.scanned
+        report.blocks += one.blocks
+        report.retired += one.retired
+        if (one.error !== undefined && report.error === undefined) report.error = one.error
+        for (const [type, count] of Object.entries(one.types)) {
+          report.types[type] = (report.types[type] ?? 0) + count
+        }
+      }
+      if (report.retired === 0 && config.compactOnDisable === true) {
         const outcome = await requestCompact(agent)
         if (outcome !== undefined) logger.info(`hindsight-switch: compaction for ${title}: ${outcome}.`)
       }
     }
-    if (retired > 0) {
-      logger.info(`hindsight-switch: retired ${retired} residual block(s) for ${title}.`)
-    } else {
-      trace(`no residual block found for ${title}`)
-    }
+    // if (report.retired > 0) {
+    //   logger.info(`hindsight-switch: retired ${report.retired} residual block(s) for ${title}.`)
+    // } else {
+    //   trace(`no residual block found for ${title}`)
+    // }
+    return report
   }
 
   /**
    * Apply one workspace's switch to the document and to every live agent in it.
    * @param key - workspace key.
    * @param disabled - next position.
+   * @returns the sweep report, or undefined when the switch was turned on.
    */
   const setDisabled = async (key, disabled) => {
     state.setDisabled(key, disabled)
@@ -391,7 +406,8 @@ export async function apply(ctx, config = {}) {
       else mountIfEnabled(agent)
     }
     // Unmounting only stops future recall. Retire what earlier turns injected.
-    if (disabled) await retireWorkspace(key, state.titleOf?.(key) ?? key)
+    if (disabled) return retireWorkspace(key, state.titleOf?.(key) ?? key)
+    return undefined
   }
 
   /**
@@ -410,21 +426,34 @@ export async function apply(ctx, config = {}) {
       workspaceId: workspace.key,
       workspaceTitle: workspace.title,
       disabled: state.isDisabled(workspace.key),
+      agents: ctx.agents.list().length,
     }
   }
 
   /**
    * Write one session workspace's position.
+   *
+   * The sweep report rides along in the response on purpose. Both of the other
+   * observation channels have proven untrustworthy — the file sink fails
+   * silently behind a catch, and stderr is mangled in some consoles — while the
+   * HTTP response is something the developer can read directly in DevTools.
+   *
    * @param sessionId - session whose workspace is being switched.
    * @param disabled - next position.
-   * @returns the view after the write.
+   * @returns the view after the write, plus the sweep report.
    */
   const writeView = async (sessionId, disabled) => {
     const workspace = resolveWorkspace(ctx.agents.get(sessionId) ?? coldSession(ctx, sessionId))
     if (workspace === undefined) throw new Error('this session has no workspace to switch')
-    await setDisabled(workspace.key, disabled)
+    const sweep = await setDisabled(workspace.key, disabled)
     logger.info(`${disabled ? 'disabled' : 'enabled'} HindSight for ${workspace.title} (${workspace.key}).`)
-    return { installed: true, workspaceId: workspace.key, workspaceTitle: workspace.title, disabled }
+    return {
+      installed: true,
+      workspaceId: workspace.key,
+      workspaceTitle: workspace.title,
+      disabled,
+      sweep: sweep ?? null,
+    }
   }
 
   ctx.inject(['webServer'], (webCtx) => {
@@ -546,10 +575,15 @@ function createLogger(ctx, logFile, enabled) {
 
   const toFile = (level, message) => {
     if (enabled !== true || logFile === undefined) return
+    const line = `${new Date().toISOString()} [${level}] ${message}`
+    // stderr first: it is the one sink a catch cannot swallow.
     try {
-      appendFileSync(logFile, `${new Date().toISOString()} [${level}] ${message}\n`)
+      console.error(line)
+    } catch { /* a closed stderr is not worth a session */ }
+    try {
+      appendFileSync(logFile, `${line}\n`)
     } catch {
-      // A read-only disk must never take a session down.
+      console.error(`hindsight-switch: trace write failed: ${String(error?.message ?? error)}`)
     }
   }
 
