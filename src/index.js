@@ -224,15 +224,28 @@ export async function apply(ctx, config = {}) {
     const kept = []
     for (const block of content) {
       if (block === null || typeof block !== 'object') { kept.push(block); continue }
-      if (typeof block.text === 'string') {
-        if (!block.text.includes(BLOCK_OPEN)) { kept.push(block); continue }
-        const rest = block.text.replace(BLOCK_RE, '').trim()
-        if (rest !== '') kept.push({ ...block, text: rest })
+      const textKey = typeof block.text === 'string' ? 'text' : (typeof block.content === 'string' ? 'content' : undefined)
+      if (textKey !== undefined) {
+        const raw = block[textKey]
+        if (!raw.includes(BLOCK_OPEN)) { kept.push(block); continue }
+        const rest = raw.replace(BLOCK_RE, '').trim()
+        if (rest !== '') kept.push({ ...block, [textKey]: rest })
         continue
       }
       kept.push(block)
     }
     return kept.length === 0 ? undefined : kept
+  }
+
+  /**
+   * Read the message content out of one session event's data.
+   * @param event - session event.
+   * @returns the string or ContentBlock array, or undefined.
+   */
+  const eventContent = (event) => {
+    if (event?.type === 'user/message') return event.data?.content
+    if (event?.type === 'assistant/message' || event?.type === 'tool/result') return event.data?.message?.content
+    return undefined
   }
 
   /**
@@ -259,10 +272,8 @@ export async function apply(ctx, config = {}) {
     // Snapshot first: an append mutates the surface we are walking.
     const candidates = surface.nodes.filter((seq) => {
       const event = eventAt(session, seq)
-      if (event?.type !== 'user/message') return false
-      const data = event.data
-      if (data === undefined || data === null) return false
-      return textOf(data.content).includes(BLOCK_OPEN)
+      const content = eventContent(event)
+      return content !== undefined && textOf(content).includes(BLOCK_OPEN)
     })
     trace(`surface scan: ${surface.nodes.length} node(s), ${candidates.length} block(s)`)
     if (candidates.length === 0) return 0
@@ -273,18 +284,26 @@ export async function apply(ctx, config = {}) {
         // An earlier replacement may have already retired this node.
         if (!session.surface.nodes.includes(seq)) continue
         const event = eventAt(session, seq)
-        if (event?.type !== 'user/message' || event.data === undefined) continue
+        const original = eventContent(event)
+        if (original === undefined) continue
 
-        const kept = stripBlocks(event.data.content)
+        const kept = stripBlocks(original)
         const content = kept === undefined
           ? [{ type: 'text', text: REMOVED_MARKER }]
           : kept
 
-        // Keep source as-is: a plugin-sourced message stays plugin-sourced, so
-        // HindSight's write-back does not mistake the marker for user input.
+        const data = { ...event.data }
+        if (event.type === 'user/message') {
+          data.content = content
+        } else if (data.message !== undefined) {
+          data.message = { ...data.message, content }
+        }
+
+        // Keep type and source as-is: HindSight's write-back does not mistake
+        // the marker for user input if the source says otherwise.
         session.append(
-          'user/message',
-          { ...event.data, role: 'user', content },
+          event.type,
+          data,
           {
             surfaceOp: { op: 'replace', start: seq, end: seq },
             sourceEventSeqs: [seq],
