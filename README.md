@@ -316,3 +316,11 @@ immediately left of the model selector:
    workspace's switch never disturbs another's history.
 6. **Turn the switch off** → that workspace recovers, and running sessions
    re-mount immediately.
+
+## Changelog
+
+### 2026-09-08
+- **Bug Fix**: Resolved an issue where HindSight injection blocks were not correctly stripped in the first turn of a new session.
+  - Enhanced `stripBlocks` to support the `content` field in content blocks (handling Markdown injections).
+  - Expanded `shadowResidualBlocks` to scan all surface event types (including `assistant/message` and `tool/result`), ensuring robust removal of residual blocks across the entire session history.
+  - Added internal `eventContent` helper for consistent message extraction.

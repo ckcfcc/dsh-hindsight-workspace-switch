@@ -210,3 +210,11 @@ dsh plugin --profile web remove dsh-hindsight-workspace-switch
 4. **清扫之后，在同一个会话里**问模型：上下文里有没有以 `<hindsight_knowledge>` 开头的内容？它应该回答没有。在本插件退役块之前，它能一字不差地把块复述出来。
 5. 切到另一个工作区的会话 → 开关仍是关闭状态，记忆照常。清扫是按工作区限定范围的，一个工作区的开关不会打扰另一个工作区的历史。
 6. 关掉开关 → 该工作区恢复，正在跑的会话立即重新挂载。
+
+## 更新日志
+
+### 2026-09-08
+- **Bug 修复**：解决了在新会话的第一轮对话中 HindSight 注入块无法被正确剥离的问题。
+  - 增强了 `stripBlocks` 函数，支持处理内容块中的 `content` 字段（用于处理 Markdown 格式的注入）。
+  - 扩大了 `shadowResidualBlocks` 的扫描范围，覆盖所有 Surface 事件类型（包括 `assistant/message` 和 `tool/result`），确保能彻底清除会话历史中的残留块。
+  - 内部新增 `eventContent` 辅助函数，实现了跨事件类型的统一消息提取。
