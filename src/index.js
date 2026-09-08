@@ -154,6 +154,7 @@ export async function apply(ctx, config = {}) {
 
   if (plugin !== undefined) {
     ctx.on('agent/created', ({ agent }) => { mountIfEnabled(agent) })
+    ctx.on('agent/session-start', ({ agent }) => { mountIfEnabled(agent) })
     ctx.on('agent/disposed', ({ agent }) => { mounted.delete(agent.id) })
     // Agents created before this plugin activated keep their own state, so a
     // patch reload does not silently strip memory from a running session.
@@ -243,7 +244,7 @@ export async function apply(ctx, config = {}) {
    * @returns the string or ContentBlock array, or undefined.
    */
   const eventContent = (event) => {
-    if (event?.type === 'user/message') return event.data?.content
+    if (event?.type === 'user/message' || event?.type === 'system/message') return event.data?.content
     if (event?.type === 'assistant/message' || event?.type === 'tool/result') return event.data?.message?.content
     return undefined
   }
@@ -293,7 +294,7 @@ export async function apply(ctx, config = {}) {
           : kept
 
         const data = { ...event.data }
-        if (event.type === 'user/message') {
+        if (event.type === 'user/message' || event.type === 'system/message') {
           data.content = content
         } else if (data.message !== undefined) {
           data.message = { ...data.message, content }
